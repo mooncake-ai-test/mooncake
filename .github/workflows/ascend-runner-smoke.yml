@@ -88,19 +88,16 @@ jobs:
               'a3-0': ('linux-aarch64-a3-0-mooncake-fed', ['2', '4', '8']),   # gy004 提供
               'a5':   ('linux-amd64-a5-mooncake-fed', ['2', '4', '8']),        # sh002 节点为 amd64
           }
-          if custom and (pool == 'custom' or cards == 'all'):
-              labels = json.loads(custom) if custom else None
+          if custom:
+              labels = json.loads(custom)
+          elif pool == 'custom':
+              raise SystemExit('pool=custom 必须在 runner_labels 里填 JSON 数组')
           else:
-              labels = None
-          if not labels:
-              if custom:
-                  labels = json.loads(custom)
-              else:
-                  pools = list(spec) if pool == 'all' else [pool]
-                  labels = []
-                  for p in pools:
-                      prefix, cs = spec[p]
-                      labels += [f'{prefix}-{c}' for c in cs if cards == 'all' or c == cards]
+              pools = list(spec) if pool == 'all' else [pool]
+              labels = []
+              for p in pools:
+                  prefix, cs = spec[p]
+                  labels += [f'{prefix}-{c}' for c in cs if cards == 'all' or c == cards]
           if not labels:
               raise SystemExit('empty label list, check inputs')
           out = json.dumps(labels)
