@@ -1,0 +1,202 @@
+name: ASCEND Runner Smoke (private-repo only)
+
+run-name: "runner-smoke pool=${{ inputs.pool }} cards=${{ inputs.cards }}"
+
+# 仅用于 mooncake-ai-test 私有验证仓库：按标签触发 fed runner（a2 / a3 / a3-0(gy004) / a5(sh002)），
+# 验证 runner 能被调度、卡数正确、容器内 NPU 设备/驱动挂载可用、缓存与代理环境就绪。
+# 该 workflow 是接入验证脚手架，不随主 CI 合入社区上游。
+#
+# 用法（两种）：
+#  1) 直接跑默认矩阵：pool=all cards=all（只跑许广跃已接好的池，未接好的标签会排队不启动，手动取消即可）
+#  2) 精确验证某个标签：pool=custom，在 runner_labels 里粘贴 JSON，如
+#     ["linux-aarch64-a3-mooncake-fed-8","linux-amd64-a5-mooncake-fed-2"]
+#
+# 默认标签表按 karmada fed 池命名规范推测（与 fla/llamafactory 一致：
+# linux-<arch>-<pool>-<repo简写>-fed-<卡数>），以许广跃实际创建的标签为准，
+# 如不同请用 runner_labels 输入覆盖，或回填修改下方 PLAN 脚本里的 spec 表。
+
+on:
+  workflow_dispatch:
+    inputs:
+      pool:
+        description: "目标池：all / a2 / a3 / a3-0(gy004) / a5(sh002) / custom"
+        required: false
+        type: choice
+        default: all
+        options:
+          - all
+          - a2
+          - a3
+          - a3-0
+          - a5
+          - custom
+      cards:
+        description: "卡数过滤（16 仅 a3）"
+        required: false
+        type: choice
+        default: all
+        options:
+          - all
+          - "2"
+          - "4"
+          - "8"
+          - "16"
+      runner_labels:
+        description: "JSON 数组，pool=custom 或需要覆盖默认标签表时逐字使用"
+        required: false
+        type: string
+        default: ""
+      job_image:
+        description: "探测用容器镜像（验证 job container 内 NPU 可用性，与真实 CI 走同一条 hook 路径）"
+        required: false
+        type: string
+        default: ascendai/cann:9.1.0-910b-ubuntu22.04-py3.12
+      extra_script:
+        description: "附加在每个探测任务末尾执行的 bash（可留空）"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ascend-runner-smoke
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Build label list
+    runs-on: ubuntu-latest
+    outputs:
+      labels: ${{ steps.gen.outputs.labels }}
+    steps:
+      - id: gen
+        env:
+          POOL: ${{ inputs.pool }}
+          CARDS: ${{ inputs.cards }}
+          CUSTOM: ${{ inputs.runner_labels }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          pool = os.environ['POOL']; cards = os.environ['CARDS']; custom = os.environ['CUSTOM'].strip()
+          # 前缀表：以许广跃后端实际创建的 scale set 为准；不符时用 runner_labels 覆盖
+          spec = {
+              'a2':   ('linux-aarch64-a2-mooncake-fed', ['2', '4', '8']),
+              'a3':   ('linux-aarch64-a3-mooncake-fed', ['2', '4', '8', '16']),
+              'a3-0': ('linux-aarch64-a3-0-mooncake-fed', ['2', '4', '8']),   # gy004 提供
+              'a5':   ('linux-amd64-a5-mooncake-fed', ['2', '4', '8']),        # sh002 节点为 amd64
+          }
+          if custom and (pool == 'custom' or cards == 'all'):
+              labels = json.loads(custom) if custom else None
+          else:
+              labels = None
+          if not labels:
+              if custom:
+                  labels = json.loads(custom)
+              else:
+                  pools = list(spec) if pool == 'all' else [pool]
+                  labels = []
+                  for p in pools:
+                      prefix, cs = spec[p]
+                      labels += [f'{prefix}-{c}' for c in cs if cards == 'all' or c == cards]
+          if not labels:
+              raise SystemExit('empty label list, check inputs')
+          out = json.dumps(labels)
+          print('labels =', out)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write('labels=' + out + '\n')
+          PY
+
+  smoke:
+    needs: plan
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.label }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        label: ${{ fromJSON(needs.plan.outputs.labels) }}
+    container:
+      image: ${{ inputs.job_image }}
+      options: --shm-size 16g
+    steps:
+      - name: Basic info
+        run: |
+          set -uo pipefail
+          echo "== label: ${{ matrix.label }}"
+          uname -a
+          head -2 /etc/os-release
+          echo "cpu=$(nproc) arch=$(uname -m)"
+          free -g | head -2
+          df -h / /tmp "${RUNNER_WORKSPACE:-/root/runner-workspace}" 2>/dev/null || true
+          echo "== whoami/pwd: $(whoami) $(pwd)"
+
+      - name: NPU devices & count
+        run: |
+          set -uo pipefail
+          expected=$(echo "${{ matrix.label }}" | awk -F- '{print $NF}')
+          mapfile -t devs < <(ls /dev/davinci[0-9]* 2>/dev/null || true)
+          actual=${#devs[@]}
+          echo "davinci devices: ${devs[*]:-none} (count=$actual)"
+          ls -l /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc 2>&1 || true
+          case "$expected" in
+            ''|*[!0-9]*) echo "::notice::label 未以卡数结尾，跳过卡数比对";;
+            *)
+              if [ "$actual" -ne "$expected" ]; then
+                echo "::error::卡数不符: 期望 $expected, 实际 $actual"
+                exit 1
+              fi
+              echo "卡数一致: $expected"
+              ;;
+          esac
+          if command -v npu-smi >/dev/null 2>&1; then
+            npu-smi info | head -60
+          else
+            echo "::warning::容器内无 npu-smi（host 驱动未挂载或不在 PATH），仅以 /dev 设备为准"
+          fi
+
+      - name: Driver mounts & host files
+        run: |
+          set -uo pipefail
+          for f in /usr/local/Ascend/driver/version.cfg /etc/ascend_install.info /etc/hccn.conf; do
+            if [ -e "$f" ]; then echo "== $f"; head -5 "$f"; else echo "::warning::$f 不存在"; fi
+          done
+
+      - name: Cache & proxy env
+        run: |
+          set -uo pipefail
+          env | grep -iE '^(http|https|no)_proxy|ssl_cert_file|requests_ca_bundle' | sed 's/=.*/=***/' || echo "no proxy env"
+          echo "== /root/.cache:"; ls /root/.cache 2>&1 | head -10 || true
+          df -h /root/.cache 2>/dev/null || true
+          echo "== network probes (report only):"
+          for u in https://github.com https://pypi.org https://registry.npmjs.org; do
+            code=$(curl -sS -o /dev/null -m 10 -w '%{http_code}' "$u" 2>&1) || code="ERR"
+            echo "$u -> $code"
+          done
+
+      - name: Toolkit / torch-npu (report only)
+        run: |
+          set -uo pipefail
+          ls /usr/local/Ascend/ascend-toolkit 2>&1 | head -5 || true
+          python3 - <<'PY' 2>&1 || echo "torch/torch_npu 不可用（镜像未内置，属正常，真实 CI 自行安装）"
+          import torch, torch_npu
+          print("torch", torch.__version__, "device_count", torch.npu.device_count())
+          PY
+
+      - name: Extra script
+        if: ${{ inputs.extra_script != '' }}
+        run: |
+          ${{ inputs.extra_script }}
+
+  summary:
+    name: Summary
+    needs: [plan, smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "labels: ${{ needs.plan.outputs.labels }}"
+          echo "smoke result: ${{ needs.smoke.result }}"
+          echo "未启动(排队)的 job 即该标签还没有对应 runner，找许广跃确认 scale set 是否已建。"
