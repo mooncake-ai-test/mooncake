@@ -12,6 +12,7 @@ concurrency:
 
 jobs:
   probe:
+    if: github.event.head_commit.message != 'ci: close Ascend readiness probe'
     name: ${{ matrix.label }}
     strategy:
       fail-fast: false
@@ -34,3 +35,9 @@ jobs:
           done
           echo 'Runner accepted the job, but the container has no Ascend device.'
           exit 1
+
+  close:
+    if: github.event.head_commit.message == 'ci: close Ascend readiness probe'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Observation closed. Previous queued probes are cancelled by workflow concurrency.'
