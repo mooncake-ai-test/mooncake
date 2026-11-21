@@ -12,7 +12,8 @@ concurrency:
 
 jobs:
   probe:
-    if: github.event.head_commit.message != 'ci: close Ascend readiness probe'
+    if: >-
+      github.event.head_commit.message != 'ci: close Ascend readiness probe'
     name: ${{ matrix.label }}
     strategy:
       fail-fast: false
@@ -37,7 +38,8 @@ jobs:
           exit 1
 
   close:
-    if: github.event.head_commit.message == 'ci: close Ascend readiness probe'
+    if: >-
+      github.event.head_commit.message == 'ci: close Ascend readiness probe'
     runs-on: ubuntu-latest
     steps:
       - run: echo 'Observation closed. Previous queued probes are cancelled by workflow concurrency.'
