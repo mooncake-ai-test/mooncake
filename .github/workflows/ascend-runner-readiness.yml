@@ -1,0 +1,36 @@
+name: Ascend runner readiness
+
+on:
+  push:
+    branches: [ci/ascend-readiness-20261121]
+
+permissions: {}
+
+concurrency:
+  group: ascend-readiness-20261121
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        label:
+          - linux-aarch64-a2-mooncake-fed-2
+          - linux-aarch64-a3-mooncake-fed-8
+    runs-on: ${{ matrix.label }}
+    timeout-minutes: 5
+    container: ubuntu:22.04
+    steps:
+      - name: Check for an Ascend device
+        shell: sh
+        run: |
+          for device in /dev/davinci[0-9]*; do
+            if [ -c "$device" ]; then
+              echo "Found Ascend device $device"
+              exit 0
+            fi
+          done
+          echo 'Runner accepted the job, but the container has no Ascend device.'
+          exit 1
