@@ -2,13 +2,28 @@ name: Single-node Ascend container versions
 
 on:
   push:
-    branches: [ci/single-node-versions-20261124]
+    branches: [ci/single-node-matrix-20261124]
 
 permissions: {}
 
 jobs:
   versions:
-    runs-on: linux-aarch64-a2-mooncake-fed-2
+    name: ${{ matrix.spec }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - spec: A2 8
+            runner: linux-aarch64-a2-mooncake-fed-8
+          - spec: A3 2
+            runner: linux-aarch64-a3-2
+          - spec: A3 8
+            runner: linux-aarch64-a3-8
+          - spec: A3 16
+            runner: linux-aarch64-a3-16
+          - spec: A5 2
+            runner: linux-amd64-a5-mooncake-fed-2
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     container:
       image: quay.io/ascend/vllm-ascend:v0.30.0@sha256:28351d337b7f9367073344240fa4e28d99794d549d577eaf317689950064150a
@@ -94,4 +109,23 @@ jobs:
                   print(f"| {name} | {value} | {source} |", file=out)
           if (vllm or "").split("+", 1)[0] != "0.30.0":
               raise SystemExit(f"Expected vllm-ascend 0.30.0, got {vllm!r}")
+          PY
+      - name: Enumerate NPU devices and run one integer addition on device 0
+        shell: bash
+        run: |
+          set -eu
+          uname -m
+          npu-smi info -m
+          python3 -u - <<'PY'
+          import torch
+          import torch_npu
+
+          count = torch.npu.device_count()
+          print(f"PyTorch logical NPU count = {count}")
+          if count < 1:
+              raise SystemExit("No NPU exposed to PyTorch")
+          result = (torch.tensor([1], dtype=torch.int32, device="npu:0") + 1).cpu().item()
+          if result != 2:
+              raise SystemExit(f"Unexpected result on npu:0: {result}")
+          print("NPU:0 integer addition = PASS")
           PY
