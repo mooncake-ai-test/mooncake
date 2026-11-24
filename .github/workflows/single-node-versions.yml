@@ -1,0 +1,135 @@
+name: Single-node Ascend SWR release check
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  versions:
+    name: ${{ matrix.spec }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - spec: A2 8
+            runner: linux-aarch64-a2-mooncake-fed-8
+            release: v0.30.0@sha256:34f37489092a16f2bfce779fdee7b0fa73bbe128606f5a456d04ea2a5a7f36ff
+          - spec: A3 2
+            runner: linux-aarch64-a3-2
+            release: v0.30.0-a3@sha256:33d74b6314b295294e0aa0b498fb95605df66c5410e0fa3cc87879b2b1b3e5f0
+          - spec: A3 8
+            runner: linux-aarch64-a3-8
+            release: v0.30.0-a3@sha256:33d74b6314b295294e0aa0b498fb95605df66c5410e0fa3cc87879b2b1b3e5f0
+          - spec: A3 16
+            runner: linux-aarch64-a3-16
+            release: v0.30.0-a3@sha256:33d74b6314b295294e0aa0b498fb95605df66c5410e0fa3cc87879b2b1b3e5f0
+          - spec: A5 2
+            runner: linux-amd64-a5-mooncake-fed-2
+            release: v0.30.0-a5@sha256:646cb4f046192fbf8e3fd246891ea60d1936d418a0635c6e83a2e599016b2ff3
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/vllm-ascend:${{ matrix.release }}
+    steps:
+      - name: Report OS, CANN, vLLM-Ascend, MMC and NPU driver
+        shell: bash
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import glob
+          import importlib.metadata as md
+          import os
+          from pathlib import Path
+          import platform
+          import re
+          import subprocess
+
+          rows = []
+          def emit(name, value, source):
+              print(f"{name} = {value} [{source}]", flush=True)
+              rows.append((name, str(value), source))
+
+          def file_version(name, patterns):
+              for pattern in patterns:
+                  for fn in sorted(glob.glob(pattern)):
+                      path = Path(fn)
+                      if not path.is_file():
+                          continue
+                      data = path.read_text(errors="replace")[:16384]
+                      match = re.search(r"(?im)^\s*(?:version|versionname|driver_version|package_version)\s*[:=]\s*[\"']?([^\s\"']+)", data)
+                      if not match:
+                          match = re.fullmatch(r"\s*(\d+[\w.()+-]*)\s*", data)
+                      if match:
+                          emit(name, match.group(1), str(path))
+                          return True
+              return False
+
+          def package(name, dist):
+              try:
+                  value = md.version(dist)
+              except md.PackageNotFoundError:
+                  return None
+              emit(name, value, f"Python distribution {dist}")
+              return value
+
+          emit("OS", platform.freedesktop_os_release()["PRETTY_NAME"], "/etc/os-release")
+          roots = [os.environ.get("ASCEND_HOME_PATH"), "/usr/local/Ascend/cann", "/usr/local/Ascend/ascend-toolkit"]
+          paths = [root + suffix for root in filter(None, roots) for suffix in
+                   ("/latest/*-linux/ascend_toolkit_install.info", "/*-linux/ascend_toolkit_install.info",
+                    "/latest/ascend_toolkit_install.info", "/latest/version.info", "/version.info",
+                    "/latest/version.cfg", "/version.cfg", "/latest/*-linux/ascend_cann_install.info",
+                    "/*-linux/ascend_cann_install.info", "/ascend_cann_install.info",
+                    "/latest/ascend_cann_install.info", "/*/version.info", "/*/version.cfg")]
+          if not file_version("CANN", paths):
+              emit("CANN", "NOT DETECTED", "toolkit installation metadata")
+          vllm = package("vLLM-Ascend", "vllm-ascend")
+          if not vllm:
+              emit("vLLM-Ascend", "NOT DETECTED", "Python package metadata")
+          if not package("MMC", "memcache-hybrid"):
+              matches = subprocess.run(["sh", "-c", "if command -v dpkg-query >/dev/null; then dpkg-query -W; elif command -v rpm >/dev/null; then rpm -qa; fi"], capture_output=True, text=True).stdout.splitlines()
+              native = [line for line in matches if re.match(r"(?i)^(?:ascend[-_])?memcache[-_]hybrid(?:\s|[-:]\d|:)", line)]
+              if native:
+                  emit("MMC", ", ".join(native), "system package database")
+              elif not file_version("MMC", ["/usr/local/Ascend/memcache*/latest/version.info", "/usr/local/Ascend/memcache*/version.info"]):
+                  emit("MMC", "NOT DETECTED", "memcache-hybrid Python/native package and installation metadata")
+          driver = file_version("Driver", ["/usr/local/Ascend/driver/version.info", "/usr/local/Ascend/driver/*/version.info", "/proc/driver/ascend/version"])
+          import shutil
+          smi = shutil.which("npu-smi") or next(iter(glob.glob("/usr/local/Ascend/driver/tools/npu-smi")), None)
+          if smi:
+              if not driver:
+                  info = subprocess.run([smi, "info", "-t", "board", "-i", "0"], capture_output=True, text=True, timeout=30)
+                  ver = re.search(r"(?im)^\s*Driver Version\s*:\s*(\S+)", info.stdout)
+                  if ver:
+                      emit("Driver", ver.group(1), "npu-smi board")
+                      driver = True
+              devices = subprocess.run([smi, "info", "-l"], capture_output=True, text=True, timeout=30)
+              print("npu-smi info -l:", devices.stdout.strip() or devices.stderr.strip(), flush=True)
+          if not driver:
+              emit("Driver", "NOT DETECTED", "host driver metadata")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              print("| Component | Observed version | Source |\n|---|---|---|", file=out)
+              for name, value, source in rows:
+                  print(f"| {name} | {value} | {source} |", file=out)
+          if (vllm or "").split("+", 1)[0] != "0.30.0":
+              raise SystemExit(f"Expected vllm-ascend 0.30.0, got {vllm!r}")
+          PY
+      - name: Enumerate NPU devices and run one integer addition on device 0
+        shell: bash
+        run: |
+          set -eu
+          uname -m
+          npu-smi info -m
+          python3 -u - <<'PY'
+          import torch
+          import torch_npu
+
+          count = torch.npu.device_count()
+          print(f"PyTorch logical NPU count = {count}")
+          if count < 1:
+              raise SystemExit("No NPU exposed to PyTorch")
+          result = (torch.tensor([1], dtype=torch.int32, device="npu:0") + 1).cpu().item()
+          if result != 2:
+              raise SystemExit(f"Unexpected result on npu:0: {result}")
+          print("NPU:0 integer addition = PASS")
+          PY
