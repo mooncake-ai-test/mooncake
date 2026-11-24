@@ -1,0 +1,79 @@
+name: A3 zero-card controller authorization
+on:
+  push:
+    branches: [ci/a3-dual-lws-20261124]
+permissions: {}
+jobs:
+  controller:
+    runs-on: linux-aarch64-a3-0
+    timeout-minutes: 20
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/vllm-ascend:nightly-cpu@sha256:935c4a80942509317516e757d41f990dde919f43f7e21c1685858bf36c8811be
+    env:
+      TARGET_NAMESPACE: mooncake-ai-test-mooncake
+    steps:
+      - name: Test inherited Kubernetes authorization without any repository kubeconfig
+        id: inherited
+        shell: bash
+        env:
+          HAS_REPO_KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 != '' }}
+        run: |
+          set -eu
+          printf 'runner=%s namespace=%s repo_KUBECONFIG_B64_present=%s\n' "$RUNNER_NAME" "$TARGET_NAMESPACE" "$HAS_REPO_KUBECONFIG_B64"
+          if [ -n "${KUBECONFIG:-}" ]; then echo 'KUBECONFIG environment: set'; else echo 'KUBECONFIG environment: unset'; fi
+          if [ -s "$HOME/.kube/config" ]; then echo 'Default kubeconfig file: present'; else echo 'Default kubeconfig file: absent'; fi
+          sa_dir=/var/run/secrets/kubernetes.io/serviceaccount
+          if [ -s "$sa_dir/token" ]; then echo 'Projected service account token: present'; else echo 'Projected service account token: absent'; fi
+          if [ -r "$sa_dir/namespace" ]; then printf 'Controller pod namespace: '; cat "$sa_dir/namespace"; echo; fi
+          kubectl version --client
+          cat > "$RUNNER_TEMP/verify-a3-auth.sh" <<'CHECK'
+          set -u
+          ns="$TARGET_NAMESPACE"
+          kubectl --request-timeout=10s auth whoami -o 'jsonpath={.status.userInfo.username}{"\n"}' || true
+          for access in 'create leaderworkersets.leaderworkerset.x-k8s.io' 'delete leaderworkersets.leaderworkerset.x-k8s.io' 'get pods' 'get pods/log'; do
+            read -r verb resource <<< "$access"
+            printf '%s %s in %s: ' "$verb" "$resource" "$ns"
+            kubectl --request-timeout=10s auth can-i "$verb" "$resource" -n "$ns" || true
+          done
+          kubectl --request-timeout=15s create --dry-run=server --validate=false -n "$ns" -f - -o name <<YAML
+          apiVersion: leaderworkerset.x-k8s.io/v1
+          kind: LeaderWorkerSet
+          metadata:
+            name: mc-auth-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}
+            namespace: $ns
+          spec:
+            replicas: 1
+            leaderWorkerTemplate:
+              size: 2
+              workerTemplate:
+                spec:
+                  containers:
+                    - name: probe
+                      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/vllm-ascend:v0.30.0-a3
+          YAML
+          CHECK
+          if bash "$RUNNER_TEMP/verify-a3-auth.sh"; then
+            echo 'Inherited LWS server-side create dry-run: ACCEPTED'
+            echo 'accepted=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Inherited LWS server-side create dry-run: FAILED'
+            echo 'accepted=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check repository-scoped kubeconfig only if inherited submission failed
+        if: steps.inherited.outputs.accepted == 'false'
+        shell: bash
+        env:
+          REPO_KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+        run: |
+          set -eu
+          if [ -z "${REPO_KUBECONFIG_B64:-}" ]; then
+            echo 'No KUBECONFIG_B64 is available to this job; no LWS was created.'
+            exit 1
+          fi
+          umask 077
+          export KUBECONFIG="$(mktemp)"
+          trap 'rm -f "$KUBECONFIG"' EXIT
+          printf '%s' "$REPO_KUBECONFIG_B64" | base64 -d > "$KUBECONFIG"
+          unset REPO_KUBECONFIG_B64
+          bash "$RUNNER_TEMP/verify-a3-auth.sh"
+          echo 'Explicit repository kubeconfig LWS server-side create dry-run: ACCEPTED'
