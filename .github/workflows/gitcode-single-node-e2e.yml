@@ -1,5 +1,7 @@
 name: MMC and MemFabric single-node E2E
 on:
+  push:
+    branches: [ci/verify-gitcode-single-node-20261124]
   workflow_dispatch:
     inputs:
       case_branch:
@@ -30,6 +32,21 @@ on:
 
 permissions: {}
 jobs:
+  release_old_a2:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Retire superseded A2 runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for id in 45390862683 45393362544; do
+            path="repos/$GITHUB_REPOSITORY/actions/runs/$id"
+            if [[ "$(gh api "$path" --jq '.status')" != completed ]]; then
+              gh api --method POST "$path/cancel"
+            fi
+          done
   select:
     runs-on: ubuntu-latest
     outputs:
@@ -40,7 +57,7 @@ jobs:
     steps:
       - id: select
         env:
-          HARDWARE: ${{ inputs.hardware || 'all' }}
+          HARDWARE: ${{ inputs.hardware || 'A2' }}
           SUITE: ${{ inputs.suite || 'smoke' }}
           SOURCE: ${{ inputs.package_source || 'both' }}
           CASE_BRANCH: ${{ inputs.case_branch || 'ci/github-single-node-swr' }}
