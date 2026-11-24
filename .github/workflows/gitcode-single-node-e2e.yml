@@ -1,0 +1,142 @@
+name: MMC and MemFabric single-node E2E
+on:
+  workflow_dispatch:
+    inputs:
+      case_branch:
+        description: Branch of ffmeng/MemcacheTestYellowToBlue
+        type: string
+        default: ci/github-single-node-swr
+        required: true
+      hardware:
+        description: Ascend hardware
+        type: choice
+        options: [all, A2, A3, A5]
+        default: all
+      package_source:
+        description: Source of the two components under test
+        type: choice
+        options: [nightly, master, both]
+        default: nightly
+      nightly_index:
+        description: Huawei nightly repository
+        type: choice
+        options: [auto, devcloud, mirrors]
+        default: auto
+      suite:
+        description: smoke (both interface suites) or a single in-container suite relative to conf/
+        type: string
+        default: smoke
+        required: true
+
+permissions: {}
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      case_sha: ${{ steps.select.outputs.case_sha }}
+      mf_sha: ${{ steps.select.outputs.mf_sha }}
+      mmc_sha: ${{ steps.select.outputs.mmc_sha }}
+    steps:
+      - id: select
+        env:
+          HARDWARE: ${{ inputs.hardware || 'all' }}
+          SUITE: ${{ inputs.suite || 'smoke' }}
+          SOURCE: ${{ inputs.package_source || 'both' }}
+          CASE_BRANCH: ${{ inputs.case_branch || 'ci/github-single-node-swr' }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          git check-ref-format --branch "$CASE_BRANCH"
+          ref=$(git ls-remote --exit-code --refs https://gitcode.com/ffmeng/MemcacheTestYellowToBlue.git "refs/heads/$CASE_BRANCH")
+          echo "case_sha=${ref%%$'\t'*}" >> "$GITHUB_OUTPUT"
+          if [[ "$SOURCE" != nightly ]]; then
+            for pair in mf:memfabric_hybrid mmc:memcache; do
+              ref=$(git ls-remote --exit-code --refs "https://gitcode.com/Ascend/${pair#*:}.git" refs/heads/master)
+              echo "${pair%:*}_sha=${ref%%$'\t'*}" >> "$GITHUB_OUTPUT"
+            done
+          fi
+          python3 - <<'PY'
+          import json, os
+          chips = {
+              "A2": ("linux-aarch64-a2-mooncake-fed-8", "v0.30.0@sha256:34f37489092a16f2bfce779fdee7b0fa73bbe128606f5a456d04ea2a5a7f36ff"),
+              "A3": ("linux-aarch64-a3-8", "v0.30.0-a3@sha256:33d74b6314b295294e0aa0b498fb95605df66c5410e0fa3cc87879b2b1b3e5f0"),
+              "A5": ("linux-amd64-a5-mooncake-fed-2", "v0.30.0-a5@sha256:646cb4f046192fbf8e3fd246891ea60d1936d418a0635c6e83a2e599016b2ff3"),
+          }
+          selected = list(chips) if os.environ["HARDWARE"] == "all" else [os.environ["HARDWARE"]]
+          if os.environ["SUITE"].startswith("memcache/in-container-native-ci"):
+              if "A2" not in selected:
+                  raise SystemExit("Choose A2 for the native RDMA suite")
+              selected = ["A2"]
+          sources = ["nightly", "master"] if os.environ["SOURCE"] == "both" else [os.environ["SOURCE"]]
+          rows = [dict(chip=c, runner=chips[c][0], tag=chips[c][1], source=s) for c in selected for s in sources]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              print("matrix=" + json.dumps({"include": rows}), file=out)
+          PY
+  e2e:
+    needs: select
+    name: Single-node ${{ matrix.chip }} / ${{ matrix.source }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 100
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/vllm-ascend:${{ matrix.tag }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CASE_BRANCH: ${{ inputs.case_branch || 'ci/github-single-node-swr' }}
+      CASE_SHA: ${{ needs.select.outputs.case_sha }}
+      SUITE: ${{ inputs.suite || 'smoke' }}
+      CHIP: ${{ matrix.chip }}
+      SOURCE: ${{ matrix.source }}
+      NIGHTLY_INDEX: ${{ inputs.nightly_index || 'auto' }}
+      MF_SHA: ${{ needs.select.outputs.mf_sha }}
+      MMC_SHA: ${{ needs.select.outputs.mmc_sha }}
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - name: Fetch selected GitCode branch in the running container
+        run: |
+          set -eu
+          git check-ref-format --branch "$CASE_BRANCH"
+          git init -q cases
+          git -C cases remote add origin https://gitcode.com/ffmeng/MemcacheTestYellowToBlue.git
+          git -C cases fetch --depth=1 --no-tags origin "$CASE_SHA"
+          git -C cases checkout -q --detach FETCH_HEAD
+          test "$(git -C cases rev-parse HEAD)" = "$CASE_SHA"
+          echo "GitCode branch $CASE_BRANCH, commit $(git -C cases rev-parse HEAD), runner $RUNNER_NAME"
+          printf 'GitCode branch `%s`, commit `%s`, hardware `%s`\n' "$CASE_BRANCH" "$(git -C cases rev-parse HEAD)" "$CHIP" >> "$GITHUB_STEP_SUMMARY"
+      - name: Prepare Python test dependencies
+        working-directory: cases
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-build-isolation -e . --index-url https://repo.huaweicloud.com/repository/pypi/simple
+      - name: Prepare fresh wheels and record provenance
+        id: prepare
+        working-directory: cases
+        run: |
+          set -eo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          python3 -u scripts/prepare_ci_wheels.py --source "$SOURCE" --index "$NIGHTLY_INDEX" --mf-sha "$MF_SHA" --mmc-sha "$MMC_SHA" --output-dir "$RUNNER_TEMP/product-wheels" 2>&1 | tee "$GITHUB_WORKSPACE/evidence/prepare.log"
+          cp "$RUNNER_TEMP/product-wheels/provenance.json" "$GITHUB_WORKSPACE/evidence/"
+          cat "$GITHUB_WORKSPACE/evidence/provenance.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Run single-node E2E suites
+        id: run_cases
+        working-directory: cases
+        run: |
+          export NO_PROXY="127.0.0.1,localhost,${NO_PROXY:-}"
+          export no_proxy="127.0.0.1,localhost,${no_proxy:-}"
+          python3 -u scripts/run-single-node-ci.py --chip "$CHIP" --suite "$SUITE" --package-path "$RUNNER_TEMP/product-wheels" --output-dir "$GITHUB_WORKSPACE/results"
+      - name: Publish test reports
+        if: ${{ !cancelled() && steps.prepare.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ matrix.chip }}-${{ matrix.source }}-${{ github.run_attempt }}
+          path: |
+            evidence/
+            results/*/results.json
+            results/*/junit.xml
+            results/*/environment.json
+            results/*/logs/*.log
+          retention-days: 7
+          if-no-files-found: error
