@@ -1,8 +1,7 @@
 name: Single-node Ascend SWR release check
 
 on:
-  push:
-    branches: [ci/guiyang-swr-v0300-20261124]
+  workflow_dispatch:
 
 permissions: {}
 
