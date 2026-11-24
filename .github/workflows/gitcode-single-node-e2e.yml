@@ -1,0 +1,99 @@
+name: MMC and MemFabric single-node E2E
+on:
+  push:
+    branches: [ci/verify-gitcode-single-node-20261124]
+  workflow_dispatch:
+    inputs:
+      case_branch:
+        description: Branch of ffmeng/MemcacheTestYellowToBlue
+        type: string
+        default: ci/github-single-node-swr
+        required: true
+      hardware:
+        description: Ascend hardware
+        type: choice
+        options: [all, A2, A3, A5]
+        default: all
+      suite:
+        description: smoke (both interface suites) or a single in-container suite relative to conf/
+        type: string
+        default: smoke
+        required: true
+
+permissions: {}
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - id: select
+        env:
+          HARDWARE: ${{ inputs.hardware || 'all' }}
+          SUITE: ${{ inputs.suite || 'smoke' }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          chips = {
+              "A2": ("linux-aarch64-a2-mooncake-fed-8", "v0.30.0@sha256:34f37489092a16f2bfce779fdee7b0fa73bbe128606f5a456d04ea2a5a7f36ff"),
+              "A3": ("linux-aarch64-a3-8", "v0.30.0-a3@sha256:33d74b6314b295294e0aa0b498fb95605df66c5410e0fa3cc87879b2b1b3e5f0"),
+              "A5": ("linux-amd64-a5-mooncake-fed-2", "v0.30.0-a5@sha256:646cb4f046192fbf8e3fd246891ea60d1936d418a0635c6e83a2e599016b2ff3"),
+          }
+          selected = list(chips) if os.environ["HARDWARE"] == "all" else [os.environ["HARDWARE"]]
+          if os.environ["SUITE"].startswith("memcache/in-container-native-ci"):
+              if "A2" not in selected:
+                  raise SystemExit("Choose A2 for the native RDMA suite")
+              selected = ["A2"]
+          rows = [dict(chip=c, runner=chips[c][0], tag=chips[c][1]) for c in selected]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              print("matrix=" + json.dumps({"include": rows}), file=out)
+          PY
+  e2e:
+    needs: select
+    name: Single-node ${{ matrix.chip }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 100
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/vllm-ascend:${{ matrix.tag }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CASE_BRANCH: ${{ inputs.case_branch || 'ci/github-single-node-swr' }}
+      SUITE: ${{ inputs.suite || 'smoke' }}
+      CHIP: ${{ matrix.chip }}
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - name: Fetch selected GitCode branch in the running container
+        run: |
+          set -eu
+          git check-ref-format --branch "$CASE_BRANCH"
+          git init -q cases
+          git -C cases remote add origin https://gitcode.com/ffmeng/MemcacheTestYellowToBlue.git
+          git -C cases fetch --depth=1 --no-tags origin "refs/heads/$CASE_BRANCH"
+          git -C cases checkout -q --detach FETCH_HEAD
+          echo "GitCode branch $CASE_BRANCH, commit $(git -C cases rev-parse HEAD), runner $RUNNER_NAME"
+          printf 'GitCode branch `%s`, commit `%s`, hardware `%s`\n' "$CASE_BRANCH" "$(git -C cases rev-parse HEAD)" "$CHIP" >> "$GITHUB_STEP_SUMMARY"
+      - name: Prepare Python test dependencies
+        working-directory: cases
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-build-isolation -e . --index-url https://repo.huaweicloud.com/repository/pypi/simple
+      - name: Run single-node E2E suites
+        working-directory: cases
+        run: |
+          export NO_PROXY="127.0.0.1,localhost,${NO_PROXY:-}"
+          export no_proxy="127.0.0.1,localhost,${no_proxy:-}"
+          python3 -u scripts/run-single-node-ci.py --chip "$CHIP" --suite "$SUITE" --output-dir "$GITHUB_WORKSPACE/results"
+      - name: Publish test reports
+        if: ${{ !cancelled() && hashFiles('results/*/results.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ matrix.chip }}-${{ github.run_attempt }}
+          path: |
+            results/*/results.json
+            results/*/junit.xml
+            results/*/environment.json
+          retention-days: 7
