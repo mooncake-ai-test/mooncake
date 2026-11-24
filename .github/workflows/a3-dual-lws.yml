@@ -1,7 +1,6 @@
 name: A3 zero-card controller authorization
 on:
-  push:
-    branches: [ci/a3-dual-lws-20261124]
+  workflow_dispatch:
 permissions: {}
 jobs:
   controller:
