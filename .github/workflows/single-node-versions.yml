@@ -1,8 +1,7 @@
 name: Single-node Ascend container versions
 
 on:
-  push:
-    branches: [ci/single-node-matrix-20261124]
+  workflow_dispatch:
 
 permissions: {}
 
