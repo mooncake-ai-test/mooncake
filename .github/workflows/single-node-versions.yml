@@ -1,8 +1,8 @@
-name: Single-node Ascend container versions
+name: Single-node Ascend SWR release check
 
 on:
   push:
-    branches: [ci/single-node-matrix-20261124]
+    branches: [ci/guiyang-swr-v0300-20261124]
 
 permissions: {}
 
@@ -15,18 +15,23 @@ jobs:
         include:
           - spec: A2 8
             runner: linux-aarch64-a2-mooncake-fed-8
+            release: v0.30.0@sha256:34f37489092a16f2bfce779fdee7b0fa73bbe128606f5a456d04ea2a5a7f36ff
           - spec: A3 2
             runner: linux-aarch64-a3-2
+            release: v0.30.0-a3@sha256:33d74b6314b295294e0aa0b498fb95605df66c5410e0fa3cc87879b2b1b3e5f0
           - spec: A3 8
             runner: linux-aarch64-a3-8
+            release: v0.30.0-a3@sha256:33d74b6314b295294e0aa0b498fb95605df66c5410e0fa3cc87879b2b1b3e5f0
           - spec: A3 16
             runner: linux-aarch64-a3-16
+            release: v0.30.0-a3@sha256:33d74b6314b295294e0aa0b498fb95605df66c5410e0fa3cc87879b2b1b3e5f0
           - spec: A5 2
             runner: linux-amd64-a5-mooncake-fed-2
+            release: v0.30.0-a5@sha256:646cb4f046192fbf8e3fd246891ea60d1936d418a0635c6e83a2e599016b2ff3
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     container:
-      image: quay.io/ascend/vllm-ascend:v0.30.0@sha256:28351d337b7f9367073344240fa4e28d99794d549d577eaf317689950064150a
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/vllm-ascend:${{ matrix.release }}
     steps:
       - name: Report OS, CANN, vLLM-Ascend, MMC and NPU driver
         shell: bash
