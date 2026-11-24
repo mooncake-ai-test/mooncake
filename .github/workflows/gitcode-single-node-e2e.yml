@@ -49,3 +49,27 @@ jobs:
           ASCEND_SLOG_PRINT_TO_STDOUT=0 mfcli kernel install --soc-version A5
           echo 'Phase 3: nightly A5 device operators installed'
           timeout --kill-after=5s 180s python3 -u "$RUNNER_TEMP/probe.py"
+          echo 'Phase 4: initialize the nightly MemFabric URMA engine on device 0'
+          cat > "$RUNNER_TEMP/trans.py" <<'PY'
+          import signal
+          import torch, torch_npu
+          import memfabric_hybrid as mf
+          engine = mf.TransferEngine()
+          print("Beginning URMA initialization", flush=True)
+          signal.alarm(75)
+          rc = engine.initialize("tcp://127.0.0.1", "127.0.0.1:5200", "Prefill", 0,
+                                 mf.TransDataOpType.DEVICE_URMA, "Decode", "")
+          signal.alarm(0)
+          print("URMA initialize result", rc, flush=True)
+          if rc == 0:
+              engine.destroy()
+          raise SystemExit(int(rc != 0))
+          PY
+          if ! command -v gdb >/dev/null; then
+            apt-get -q update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gdb
+          fi
+          export TEST_MF_TRANSPORT_FULL_MESH=1 MF_HYBM_RDMA_USE_HCOMM=0 MF_HYBM_RDMA_USE_AICPU=0
+          gdb -nx -batch -ex 'set pagination off' -ex 'handle SIGALRM stop print nopass' -ex run -ex 'thread apply all bt 16' --args python3 -u "$RUNNER_TEMP/trans.py" > "$RUNNER_TEMP/trans-debug.log" 2>&1
+          grep -E 'Beginning URMA|URMA initialize|Program received|received signal|ptrace|^#|^Thread [0-9]+ ' "$RUNNER_TEMP/trans-debug.log" | tail -220
+          grep -q 'URMA initialize result 0' "$RUNNER_TEMP/trans-debug.log"
