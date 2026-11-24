@@ -1,7 +1,5 @@
 name: MMC and MemFabric single-node E2E
 on:
-  push:
-    branches: [ci/verify-gitcode-single-node-20261124]
   workflow_dispatch:
     inputs:
       case_branch:
@@ -42,9 +40,9 @@ jobs:
     steps:
       - id: select
         env:
-          HARDWARE: ${{ inputs.hardware || 'pair' }}
+          HARDWARE: ${{ inputs.hardware || 'all' }}
           SUITE: ${{ inputs.suite || 'smoke' }}
-          SOURCE: ${{ inputs.package_source || 'master' }}
+          SOURCE: ${{ inputs.package_source || 'both' }}
           CASE_BRANCH: ${{ inputs.case_branch || 'ci/github-single-node-swr' }}
           GIT_TERMINAL_PROMPT: "0"
         run: |
@@ -64,7 +62,7 @@ jobs:
               "A3": ("linux-aarch64-a3-8", "v0.30.0-a3@sha256:33d74b6314b295294e0aa0b498fb95605df66c5410e0fa3cc87879b2b1b3e5f0"),
               "A5": ("linux-amd64-a5-mooncake-fed-2", "v0.30.0-a5@sha256:646cb4f046192fbf8e3fd246891ea60d1936d418a0635c6e83a2e599016b2ff3"),
           }
-          selected = list(chips) if os.environ["HARDWARE"] == "all" else (["A2", "A3"] if os.environ["HARDWARE"] == "pair" else [os.environ["HARDWARE"]])
+          selected = list(chips) if os.environ["HARDWARE"] == "all" else [os.environ["HARDWARE"]]
           if os.environ["SUITE"].startswith("memcache/in-container-native-ci"):
               if "A2" not in selected:
                   raise SystemExit("Choose A2 for the native RDMA suite")
