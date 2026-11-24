@@ -11,7 +11,7 @@ jobs:
     runs-on: linux-aarch64-a2-mooncake-fed-2
     timeout-minutes: 30
     container:
-      image: swr.cn-north-12.myhuaweicloud.com/ascend/vllm-ascend:v0.30.0
+      image: quay.io/ascend/vllm-ascend:v0.30.0@sha256:28351d337b7f9367073344240fa4e28d99794d549d577eaf317689950064150a
     steps:
       - name: Report OS, CANN, vLLM-Ascend, MMC and NPU driver
         shell: bash
@@ -59,7 +59,9 @@ jobs:
           paths = [root + suffix for root in filter(None, roots) for suffix in
                    ("/latest/*-linux/ascend_toolkit_install.info", "/*-linux/ascend_toolkit_install.info",
                     "/latest/ascend_toolkit_install.info", "/latest/version.info", "/version.info",
-                    "/latest/version.cfg", "/version.cfg", "/latest/*-linux/ascend_cann_install.info")]
+                    "/latest/version.cfg", "/version.cfg", "/latest/*-linux/ascend_cann_install.info",
+                    "/*-linux/ascend_cann_install.info", "/ascend_cann_install.info",
+                    "/latest/ascend_cann_install.info", "/*/version.info", "/*/version.cfg")]
           if not file_version("CANN", paths):
               emit("CANN", "NOT DETECTED", "toolkit installation metadata")
           vllm = package("vLLM-Ascend", "vllm-ascend")
