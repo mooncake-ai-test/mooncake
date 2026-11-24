@@ -42,7 +42,7 @@ jobs:
     steps:
       - id: select
         env:
-          HARDWARE: ${{ inputs.hardware || 'all' }}
+          HARDWARE: ${{ inputs.hardware || 'A3' }}
           SUITE: ${{ inputs.suite || 'smoke' }}
           SOURCE: ${{ inputs.package_source || 'both' }}
           CASE_BRANCH: ${{ inputs.case_branch || 'ci/github-single-node-swr' }}
@@ -128,6 +128,7 @@ jobs:
         run: |
           export NO_PROXY="127.0.0.1,localhost,${NO_PROXY:-}"
           export no_proxy="127.0.0.1,localhost,${no_proxy:-}"
+          export ASCEND_GLOBAL_LOG_LEVEL=3 ASCEND_SLOG_PRINT_TO_STDOUT=1
           python3 -u scripts/run-single-node-ci.py --chip "$CHIP" --suite "$SUITE" --package-path "$RUNNER_TEMP/product-wheels" --output-dir "$GITHUB_WORKSPACE/results"
       - name: Publish test reports
         if: ${{ !cancelled() && steps.prepare.outcome != 'skipped' }}
