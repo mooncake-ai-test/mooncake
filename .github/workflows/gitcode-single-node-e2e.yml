@@ -1,5 +1,7 @@
 name: MMC and MemFabric single-node E2E
 on:
+  push:
+    branches: [ci/verify-gitcode-single-node-20261124]
   workflow_dispatch:
     inputs:
       case_branch:
@@ -40,9 +42,9 @@ jobs:
     steps:
       - id: select
         env:
-          HARDWARE: ${{ inputs.hardware || 'all' }}
+          HARDWARE: ${{ inputs.hardware || 'pair' }}
           SUITE: ${{ inputs.suite || 'smoke' }}
-          SOURCE: ${{ inputs.package_source || 'both' }}
+          SOURCE: ${{ inputs.package_source || 'master' }}
           CASE_BRANCH: ${{ inputs.case_branch || 'ci/github-single-node-swr' }}
           GIT_TERMINAL_PROMPT: "0"
         run: |
@@ -62,7 +64,7 @@ jobs:
               "A3": ("linux-aarch64-a3-8", "v0.30.0-a3@sha256:33d74b6314b295294e0aa0b498fb95605df66c5410e0fa3cc87879b2b1b3e5f0"),
               "A5": ("linux-amd64-a5-mooncake-fed-2", "v0.30.0-a5@sha256:646cb4f046192fbf8e3fd246891ea60d1936d418a0635c6e83a2e599016b2ff3"),
           }
-          selected = list(chips) if os.environ["HARDWARE"] == "all" else [os.environ["HARDWARE"]]
+          selected = list(chips) if os.environ["HARDWARE"] == "all" else (["A2", "A3"] if os.environ["HARDWARE"] == "pair" else [os.environ["HARDWARE"]])
           if os.environ["SUITE"].startswith("memcache/in-container-native-ci"):
               if "A2" not in selected:
                   raise SystemExit("Choose A2 for the native RDMA suite")
@@ -74,6 +76,27 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               print("matrix=" + json.dumps({"include": rows}), file=out)
           PY
+      - name: Fetch the GitHub dependency pinned by the MMC master commit
+        if: steps.select.outputs.mmc_sha != ''
+        env:
+          MMC_SHA: ${{ steps.select.outputs.mmc_sha }}
+        run: |
+          set -eu
+          git init -q mmc-tree
+          git -C mmc-tree fetch -q --depth=1 --no-tags https://gitcode.com/Ascend/memcache.git "$MMC_SHA"
+          sub_sha=$(git -C mmc-tree rev-parse "$MMC_SHA:3rdparty/prometheus-cpp-lite")
+          git init -q --bare prometheus.git
+          git -C prometheus.git fetch -q --no-tags https://github.com/biaks/prometheus-cpp-lite.git "$sub_sha:refs/heads/ci-target"
+          git -C prometheus.git bundle create "$GITHUB_WORKSPACE/prometheus.bundle" refs/heads/ci-target
+          echo "Bundled MMC submodule 3rdparty/prometheus-cpp-lite at $sub_sha"
+      - name: Share pinned submodule with source builds
+        if: steps.select.outputs.mmc_sha != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: prometheus-${{ steps.select.outputs.mmc_sha }}
+          path: prometheus.bundle
+          retention-days: 1
+          overwrite: true
   e2e:
     needs: select
     name: Single-node ${{ matrix.chip }} / ${{ matrix.source }}
@@ -113,12 +136,19 @@ jobs:
         working-directory: cases
         run: |
           python3 -m pip install --disable-pip-version-check --no-build-isolation -e . --index-url https://repo.huaweicloud.com/repository/pypi/simple
+      - name: Receive the pinned MMC build dependency
+        if: matrix.source == 'master'
+        uses: actions/download-artifact@v4
+        with:
+          name: prometheus-${{ needs.select.outputs.mmc_sha }}
+          path: .mmc-deps
       - name: Prepare fresh wheels and record provenance
         id: prepare
         working-directory: cases
         run: |
           set -eo pipefail
           mkdir -p "$GITHUB_WORKSPACE/evidence"
+          if [[ "$SOURCE" == master ]]; then export MMC_PROMETHEUS_BUNDLE="$GITHUB_WORKSPACE/.mmc-deps/prometheus.bundle"; fi
           python3 -u scripts/prepare_ci_wheels.py --source "$SOURCE" --index "$NIGHTLY_INDEX" --mf-sha "$MF_SHA" --mmc-sha "$MMC_SHA" --output-dir "$RUNNER_TEMP/product-wheels" 2>&1 | tee "$GITHUB_WORKSPACE/evidence/prepare.log"
           cp "$RUNNER_TEMP/product-wheels/provenance.json" "$GITHUB_WORKSPACE/evidence/"
           cat "$GITHUB_WORKSPACE/evidence/provenance.json" >> "$GITHUB_STEP_SUMMARY"
