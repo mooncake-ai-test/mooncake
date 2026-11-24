@@ -42,7 +42,7 @@ jobs:
     steps:
       - id: select
         env:
-          HARDWARE: ${{ inputs.hardware || 'A3' }}
+          HARDWARE: ${{ inputs.hardware || 'A2' }}
           SUITE: ${{ inputs.suite || 'smoke' }}
           SOURCE: ${{ inputs.package_source || 'both' }}
           CASE_BRANCH: ${{ inputs.case_branch || 'ci/github-single-node-swr' }}
@@ -60,7 +60,7 @@ jobs:
           python3 - <<'PY'
           import json, os
           chips = {
-              "A2": ("linux-aarch64-a2-mooncake-fed-8", "v0.30.0@sha256:34f37489092a16f2bfce779fdee7b0fa73bbe128606f5a456d04ea2a5a7f36ff"),
+              "A2": ("linux-aarch64-a2-mooncake-fed-2", "v0.30.0@sha256:34f37489092a16f2bfce779fdee7b0fa73bbe128606f5a456d04ea2a5a7f36ff"),
               "A3": ("linux-aarch64-a3-8", "v0.30.0-a3@sha256:33d74b6314b295294e0aa0b498fb95605df66c5410e0fa3cc87879b2b1b3e5f0"),
               "A5": ("linux-amd64-a5-mooncake-fed-2", "v0.30.0-a5@sha256:646cb4f046192fbf8e3fd246891ea60d1936d418a0635c6e83a2e599016b2ff3"),
           }
@@ -69,6 +69,8 @@ jobs:
               if "A2" not in selected:
                   raise SystemExit("Choose A2 for the native RDMA suite")
               selected = ["A2"]
+              if "smallpool" not in os.environ["SUITE"]:
+                  chips["A2"] = ("linux-aarch64-a2-mooncake-fed-8", chips["A2"][1])
           sources = ["nightly", "master"] if os.environ["SOURCE"] == "both" else [os.environ["SOURCE"]]
           rows = [dict(chip=c, runner=chips[c][0], tag=chips[c][1], source=s) for c in selected for s in sources]
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
