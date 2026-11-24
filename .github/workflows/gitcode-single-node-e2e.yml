@@ -54,6 +54,7 @@ jobs:
           import signal
           import torch, torch_npu
           import memfabric_hybrid as mf
+          mf.set_log_level(0)
           engine = mf.TransferEngine()
           print("Beginning URMA initialization", flush=True)
           signal.alarm(75)
@@ -65,11 +66,8 @@ jobs:
               engine.destroy()
           raise SystemExit(int(rc != 0))
           PY
-          if ! command -v gdb >/dev/null; then
-            apt-get -q update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gdb
-          fi
           export TEST_MF_TRANSPORT_FULL_MESH=1 MF_HYBM_RDMA_USE_HCOMM=0 MF_HYBM_RDMA_USE_AICPU=0
-          gdb -nx -batch -ex 'set pagination off' -ex 'handle SIGALRM stop print nopass' -ex run -ex 'thread apply all bt 16' --args python3 -u "$RUNNER_TEMP/trans.py" > "$RUNNER_TEMP/trans-debug.log" 2>&1
-          grep -E 'Beginning URMA|URMA initialize|Program received|received signal|ptrace|^#|^Thread [0-9]+ ' "$RUNNER_TEMP/trans-debug.log" | tail -220
-          grep -q 'URMA initialize result 0' "$RUNNER_TEMP/trans-debug.log"
+          status=0
+          python3 -u "$RUNNER_TEMP/trans.py" > "$RUNNER_TEMP/trans-debug.log" 2>&1 || status=$?
+          grep -Ei 'Beginning URMA|URMA initialize|\[(HYBM|SMEM|ADAPTER)|undefined symbol|\[error\]|traceback|AttributeError' "$RUNNER_TEMP/trans-debug.log" | tail -100 || true
+          exit "$status"
