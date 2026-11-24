@@ -74,6 +74,27 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               print("matrix=" + json.dumps({"include": rows}), file=out)
           PY
+      - name: Fetch the GitHub dependency pinned by the MMC master commit
+        if: steps.select.outputs.mmc_sha != ''
+        env:
+          MMC_SHA: ${{ steps.select.outputs.mmc_sha }}
+        run: |
+          set -eu
+          git init -q mmc-tree
+          git -C mmc-tree fetch -q --depth=1 --no-tags https://gitcode.com/Ascend/memcache.git "$MMC_SHA"
+          sub_sha=$(git -C mmc-tree rev-parse "$MMC_SHA:3rdparty/prometheus-cpp-lite")
+          git init -q --bare prometheus.git
+          git -C prometheus.git fetch -q --no-tags https://github.com/biaks/prometheus-cpp-lite.git "$sub_sha:refs/heads/ci-target"
+          git -C prometheus.git bundle create "$GITHUB_WORKSPACE/prometheus.bundle" refs/heads/ci-target
+          echo "Bundled MMC submodule 3rdparty/prometheus-cpp-lite at $sub_sha"
+      - name: Share pinned submodule with source builds
+        if: steps.select.outputs.mmc_sha != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: prometheus-${{ steps.select.outputs.mmc_sha }}
+          path: prometheus.bundle
+          retention-days: 1
+          overwrite: true
   e2e:
     needs: select
     name: Single-node ${{ matrix.chip }} / ${{ matrix.source }}
@@ -113,12 +134,19 @@ jobs:
         working-directory: cases
         run: |
           python3 -m pip install --disable-pip-version-check --no-build-isolation -e . --index-url https://repo.huaweicloud.com/repository/pypi/simple
+      - name: Receive the pinned MMC build dependency
+        if: matrix.source == 'master'
+        uses: actions/download-artifact@v4
+        with:
+          name: prometheus-${{ needs.select.outputs.mmc_sha }}
+          path: .mmc-deps
       - name: Prepare fresh wheels and record provenance
         id: prepare
         working-directory: cases
         run: |
           set -eo pipefail
           mkdir -p "$GITHUB_WORKSPACE/evidence"
+          if [[ "$SOURCE" == master ]]; then export MMC_PROMETHEUS_BUNDLE="$GITHUB_WORKSPACE/.mmc-deps/prometheus.bundle"; fi
           python3 -u scripts/prepare_ci_wheels.py --source "$SOURCE" --index "$NIGHTLY_INDEX" --mf-sha "$MF_SHA" --mmc-sha "$MMC_SHA" --output-dir "$RUNNER_TEMP/product-wheels" 2>&1 | tee "$GITHUB_WORKSPACE/evidence/prepare.log"
           cp "$RUNNER_TEMP/product-wheels/provenance.json" "$GITHUB_WORKSPACE/evidence/"
           cat "$GITHUB_WORKSPACE/evidence/provenance.json" >> "$GITHUB_STEP_SUMMARY"
