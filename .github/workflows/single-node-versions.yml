@@ -2,7 +2,7 @@ name: Single-node Ascend container versions
 
 on:
   push:
-    branches: [ci/single-node-matrix-20261124]
+    branches: [ci/single-node-a5-retry-20261124]
 
 permissions: {}
 
@@ -13,20 +13,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - spec: A2 8
-            runner: linux-aarch64-a2-mooncake-fed-8
-          - spec: A3 2
-            runner: linux-aarch64-a3-2
-          - spec: A3 8
-            runner: linux-aarch64-a3-8
-          - spec: A3 16
-            runner: linux-aarch64-a3-16
           - spec: A5 2
             runner: linux-amd64-a5-mooncake-fed-2
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     container:
-      image: quay.io/ascend/vllm-ascend:v0.30.0@sha256:28351d337b7f9367073344240fa4e28d99794d549d577eaf317689950064150a
+      image: quay.nju.edu.cn/ascend/vllm-ascend:v0.30.0@sha256:28351d337b7f9367073344240fa4e28d99794d549d577eaf317689950064150a
     steps:
       - name: Report OS, CANN, vLLM-Ascend, MMC and NPU driver
         shell: bash
