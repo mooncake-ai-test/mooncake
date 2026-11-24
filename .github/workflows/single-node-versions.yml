@@ -1,0 +1,95 @@
+name: Single-node Ascend container versions
+
+on:
+  push:
+    branches: [ci/single-node-versions-20261124]
+
+permissions: {}
+
+jobs:
+  versions:
+    runs-on: linux-aarch64-a2-mooncake-fed-2
+    timeout-minutes: 30
+    container:
+      image: swr.cn-north-12.myhuaweicloud.com/ascend/vllm-ascend:v0.30.0
+    steps:
+      - name: Report OS, CANN, vLLM-Ascend, MMC and NPU driver
+        shell: bash
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import glob
+          import importlib.metadata as md
+          import os
+          from pathlib import Path
+          import platform
+          import re
+          import subprocess
+
+          rows = []
+          def emit(name, value, source):
+              print(f"{name} = {value} [{source}]", flush=True)
+              rows.append((name, str(value), source))
+
+          def file_version(name, patterns):
+              for pattern in patterns:
+                  for fn in sorted(glob.glob(pattern)):
+                      path = Path(fn)
+                      if not path.is_file():
+                          continue
+                      data = path.read_text(errors="replace")[:16384]
+                      match = re.search(r"(?im)^\s*(?:version|versionname|driver_version|package_version)\s*[:=]\s*[\"']?([^\s\"']+)", data)
+                      if not match:
+                          match = re.fullmatch(r"\s*(\d+[\w.()+-]*)\s*", data)
+                      if match:
+                          emit(name, match.group(1), str(path))
+                          return True
+              return False
+
+          def package(name, dist):
+              try:
+                  value = md.version(dist)
+              except md.PackageNotFoundError:
+                  return None
+              emit(name, value, f"Python distribution {dist}")
+              return value
+
+          emit("OS", platform.freedesktop_os_release()["PRETTY_NAME"], "/etc/os-release")
+          roots = [os.environ.get("ASCEND_HOME_PATH"), "/usr/local/Ascend/cann", "/usr/local/Ascend/ascend-toolkit"]
+          paths = [root + suffix for root in filter(None, roots) for suffix in
+                   ("/latest/*-linux/ascend_toolkit_install.info", "/*-linux/ascend_toolkit_install.info",
+                    "/latest/ascend_toolkit_install.info", "/latest/version.info", "/version.info",
+                    "/latest/version.cfg", "/version.cfg", "/latest/*-linux/ascend_cann_install.info")]
+          if not file_version("CANN", paths):
+              emit("CANN", "NOT DETECTED", "toolkit installation metadata")
+          vllm = package("vLLM-Ascend", "vllm-ascend")
+          if not vllm:
+              emit("vLLM-Ascend", "NOT DETECTED", "Python package metadata")
+          if not package("MMC", "memcache-hybrid"):
+              matches = subprocess.run(["sh", "-c", "if command -v dpkg-query >/dev/null; then dpkg-query -W; elif command -v rpm >/dev/null; then rpm -qa; fi"], capture_output=True, text=True).stdout.splitlines()
+              native = [line for line in matches if re.match(r"(?i)^(?:ascend[-_])?memcache[-_]hybrid(?:\s|[-:]\d|:)", line)]
+              if native:
+                  emit("MMC", ", ".join(native), "system package database")
+              elif not file_version("MMC", ["/usr/local/Ascend/memcache*/latest/version.info", "/usr/local/Ascend/memcache*/version.info"]):
+                  emit("MMC", "NOT DETECTED", "memcache-hybrid Python/native package and installation metadata")
+          driver = file_version("Driver", ["/usr/local/Ascend/driver/version.info", "/usr/local/Ascend/driver/*/version.info", "/proc/driver/ascend/version"])
+          import shutil
+          smi = shutil.which("npu-smi") or next(iter(glob.glob("/usr/local/Ascend/driver/tools/npu-smi")), None)
+          if smi:
+              if not driver:
+                  info = subprocess.run([smi, "info", "-t", "board", "-i", "0"], capture_output=True, text=True, timeout=30)
+                  ver = re.search(r"(?im)^\s*Driver Version\s*:\s*(\S+)", info.stdout)
+                  if ver:
+                      emit("Driver", ver.group(1), "npu-smi board")
+                      driver = True
+              devices = subprocess.run([smi, "info", "-l"], capture_output=True, text=True, timeout=30)
+              print("npu-smi info -l:", devices.stdout.strip() or devices.stderr.strip(), flush=True)
+          if not driver:
+              emit("Driver", "NOT DETECTED", "host driver metadata")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              print("| Component | Observed version | Source |\n|---|---|---|", file=out)
+              for name, value, source in rows:
+                  print(f"| {name} | {value} | {source} |", file=out)
+          if (vllm or "").split("+", 1)[0] != "0.30.0":
+              raise SystemExit(f"Expected vllm-ascend 0.30.0, got {vllm!r}")
+          PY
