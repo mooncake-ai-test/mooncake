@@ -26,12 +26,18 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
+      case_sha: ${{ steps.select.outputs.case_sha }}
     steps:
       - id: select
         env:
-          HARDWARE: ${{ inputs.hardware || 'all' }}
+          HARDWARE: ${{ inputs.hardware || 'A3' }}
           SUITE: ${{ inputs.suite || 'smoke' }}
+          CASE_BRANCH: ${{ inputs.case_branch || 'ci/github-single-node-swr' }}
+          GIT_TERMINAL_PROMPT: "0"
         run: |
+          git check-ref-format --branch "$CASE_BRANCH"
+          ref=$(git ls-remote --exit-code --refs https://gitcode.com/ffmeng/MemcacheTestYellowToBlue.git "refs/heads/$CASE_BRANCH")
+          echo "case_sha=${ref%%$'\t'*}" >> "$GITHUB_OUTPUT"
           python3 - <<'PY'
           import json, os
           chips = {
@@ -63,6 +69,7 @@ jobs:
         shell: bash
     env:
       CASE_BRANCH: ${{ inputs.case_branch || 'ci/github-single-node-swr' }}
+      CASE_SHA: ${{ needs.select.outputs.case_sha }}
       SUITE: ${{ inputs.suite || 'smoke' }}
       CHIP: ${{ matrix.chip }}
       GIT_TERMINAL_PROMPT: "0"
@@ -73,8 +80,9 @@ jobs:
           git check-ref-format --branch "$CASE_BRANCH"
           git init -q cases
           git -C cases remote add origin https://gitcode.com/ffmeng/MemcacheTestYellowToBlue.git
-          git -C cases fetch --depth=1 --no-tags origin "refs/heads/$CASE_BRANCH"
+          git -C cases fetch --depth=1 --no-tags origin "$CASE_SHA"
           git -C cases checkout -q --detach FETCH_HEAD
+          test "$(git -C cases rev-parse HEAD)" = "$CASE_SHA"
           echo "GitCode branch $CASE_BRANCH, commit $(git -C cases rev-parse HEAD), runner $RUNNER_NAME"
           printf 'GitCode branch `%s`, commit `%s`, hardware `%s`\n' "$CASE_BRANCH" "$(git -C cases rev-parse HEAD)" "$CHIP" >> "$GITHUB_STEP_SUMMARY"
       - name: Prepare Python test dependencies
@@ -96,4 +104,5 @@ jobs:
             results/*/results.json
             results/*/junit.xml
             results/*/environment.json
+            results/*/logs/*.log
           retention-days: 7
